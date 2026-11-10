@@ -158,7 +158,7 @@ async function refreshMetrics(){
   try {
     const m = await (await fetch("/metrics")).json();
     $("mReq").textContent = m.predict_requests;
-    $("mErr").textContent = `${m["error_rate_%"]}% / ${m["server_error_rate_%"]}%`;
+    $("mErr").textContent = `${m["client_error_rate_%"]}% / ${m["server_error_rate_%"]}%`;
     $("mP50").textContent = m.latency_ms.p50 == null ? "—" : `${(m.latency_ms.p50/1000).toFixed(2)} / ${(m.latency_ms.p95/1000).toFixed(2)} с`;
     $("mWarn").textContent = m.descriptions_total ? (m["warning_rate_%"].health_claim || 0) + "%" : "—";
     $("monUpdated").textContent = "аптайм " + Math.round(m.uptime_s/60) + " мин";

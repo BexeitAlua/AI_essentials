@@ -66,6 +66,7 @@ class Metrics:
                 # 4xx — некорректный ввод пользователя, 5xx — сбой сервиса или модель не готова
                 "error_rate_%": round(100 * (client_err + server_err) / predicts, 1) if predicts else 0.0,
                 "server_error_rate_%": round(100 * server_err / predicts, 1) if predicts else 0.0,
+                "client_error_rate_%": round(100 * client_err / predicts, 1) if predicts else 0.0,
                 "descriptions_total": self.descriptions,
                 "warnings": dict(self.warnings),
                 "warning_rate_%": {k: round(100 * v / self.descriptions, 1)
