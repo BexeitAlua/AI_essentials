@@ -1,10 +1,10 @@
 # menu-desc-generator — генератор описаний блюд
 
-[![tests](https://github.com/<ваш_ник>/menu-desc-generator/actions/workflows/tests.yml/badge.svg)](https://github.com/<ваш_ник>/menu-desc-generator/actions/workflows/tests.yml)
+[![tests](https://github.com/BexeitAlua/AI_essentials/actions/workflows/tests.yml/badge.svg)](https://github.com/BexeitAlua/AI_essentials/actions/workflows/tests.yml)
 
-**Живой сервис:** https://<ваш_ник>-menu-desc-generator.hf.space ·
-**Модель:** https://huggingface.co/<ваш_ник>/rut5-menu-desc (тег `v1.0.0`) ·
-**Автор:** Бексеит Алуа, AAI-2601
+**Живой сервис:** https://alllukaaa-menu-desc-generator.hf.space ·
+**Модель:** https://huggingface.co/alllukaaa/rut5-menu-desc (тег `v1.0.0`) ·
+**Авторы:** 
 
 
 Прототип интеллектуальной системы: обученная модель, API, веб-интерфейс, тесты, мониторинг, деплой.
