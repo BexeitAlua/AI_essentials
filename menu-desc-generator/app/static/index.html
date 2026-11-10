@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Описания блюд</title>
+<style>
+:root{--bg:#F6F3EC;--card:#FFFDF8;--ink:#1E2B2F;--muted:#5A6568;--line:#E2DACB;--accent:#B04A28;--accent-ink:#fff;--warn:#F3D9CC;--ok:#DDEBD9;--err:#C0392B}
+@media (prefers-color-scheme:dark){:root{--bg:#161D20;--card:#1E2B2F;--ink:#F1EEE6;--muted:#A8B3B0;--line:#33444A;--accent:#E8865F;--accent-ink:#161D20;--warn:#5A3426;--ok:#2C4A33;--err:#FF8A7A}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:1040px;margin:0 auto;padding:32px 16px 48px}
+header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:24px}
+h1{font-size:28px;margin:0 0 4px}
+.sub{color:var(--muted);margin:0}
+.status{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--line);border-radius:999px;font-size:14px;background:var(--card)}
+.dot{width:10px;height:10px;border-radius:50%;background:#aaa}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+@media (max-width:760px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px}
+label{display:block;font-weight:600;margin:14px 0 6px}
+label:first-of-type{margin-top:0}
+.hint{font-weight:400;color:var(--muted);font-size:13px}
+input,textarea{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);font:inherit}
+textarea{min-height:96px;resize:vertical}
+input:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:1px}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;align-items:center}
+button{font:inherit;border:0;border-radius:10px;padding:10px 18px;cursor:pointer}
+.primary{background:var(--accent);color:var(--accent-ink);font-weight:600}
+.primary:disabled{opacity:.6;cursor:wait}
+.ghost{background:transparent;border:1px solid var(--line);color:var(--ink);padding:6px 12px;font-size:14px}
+.desc{font-size:20px;line-height:1.45;margin:4px 0 16px;min-height:60px}
+.empty{color:var(--muted)}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.chip{padding:3px 10px;border-radius:999px;font-size:13px;background:var(--warn)}
+.chip.ok{background:var(--ok)}
+.meta{font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);word-break:break-word}
+.error{color:var(--err);font-weight:600}
+h2{font-size:18px;margin:0 0 12px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+@media (max-width:760px){.stats{grid-template-columns:repeat(2,1fr)}}
+.stat b{display:block;font-size:24px}
+.stat span{color:var(--muted);font-size:13px}
+.mon{margin-top:20px}
+footer{margin-top:20px;color:var(--muted);font-size:13px}
+a{color:var(--accent)}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Генератор описаний блюд</h1>
+      <p class="sub">Название, категория и ингредиенты → короткое описание для карточки меню</p>
+    </div>
+    <span class="status" id="status"><span class="dot" id="dot"></span><span id="statusText">проверка…</span></span>
+  </header>
+
+  <div class="grid">
+    <form class="card" id="form">
+      <label for="title">Название <span class="hint">обязательно</span></label>
+      <input id="title" maxlength="100" required placeholder="Бешбармак">
+      <label for="category">Категория <span class="hint">необязательно, уровни через «&gt;»</span></label>
+      <input id="category" placeholder="Горячие блюда > Блюда из мяса">
+      <label for="ingredients">Ингредиенты <span class="hint">через запятую, 1–30</span></label>
+      <textarea id="ingredients" required placeholder="конина, баранина, тесто, лук репчатый, бульон"></textarea>
+      <div class="row">
+        <button class="primary" id="submit" type="submit">Сгенерировать</button>
+        <button class="ghost" type="button" data-ex="0">Бешбармак</button>
+        <button class="ghost" type="button" data-ex="1">Сырники</button>
+        <button class="ghost" type="button" data-ex="2">Боул с лососем</button>
+      </div>
+    </form>
+
+    <section class="card" aria-live="polite">
+      <h2>Результат</h2>
+      <p class="desc empty" id="desc">Заполните форму и нажмите «Сгенерировать».</p>
+      <div class="chips" id="chips"></div>
+      <div class="meta" id="meta"></div>
+    </section>
+  </div>
+
+  <section class="card mon">
+    <div class="row" style="justify-content:space-between;margin-top:0">
+      <h2 style="margin:0">Мониторинг</h2>
+      <span class="meta" id="monUpdated"></span>
+    </div>
+    <div class="stats" style="margin-top:12px">
+      <div class="stat"><b id="mReq">—</b><span>запросов к модели</span></div>
+      <div class="stat"><b id="mErr">—</b><span>ошибок (ввод / сервер)</span></div>
+      <div class="stat"><b id="mP50">—</b><span>задержка p50 / p95</span></div>
+      <div class="stat"><b id="mWarn">—</b><span>описаний с health claim</span></div>
+    </div>
+  </section>
+
+  <footer>API: <a href="/docs">/docs</a> · <a href="/health">/health</a> · <a href="/version">/version</a> · <a href="/metrics">/metrics</a> · <span id="ver"></span></footer>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const EXAMPLES = [
+  {title:"Бешбармак", category:"Горячие блюда > Блюда из мяса", ingredients:"конина, баранина, тесто, лук репчатый, бульон"},
+  {title:"Сырники", category:"Завтраки", ingredients:"творог, яйцо, мука, сахар, сметана"},
+  {title:"Боул с лососем", category:"Горячие блюда > Блюда из рыбы и морепродуктов", ingredients:"лосось, рис, авокадо, огурец, кунжут, соевый соус"},
+];
+const WARN_TEXT = {
+  health_claim:"утверждение о пользе", first_person:"от первого лица", no_ingredient_mentioned:"нет ингредиентов в тексте",
+  empty_output:"пустой ответ", input_truncated:"вход обрезан до 128 токенов"
+};
+document.querySelectorAll("[data-ex]").forEach(b => b.addEventListener("click", () => {
+  const ex = EXAMPLES[+b.dataset.ex];
+  $("title").value = ex.title; $("category").value = ex.category; $("ingredients").value = ex.ingredients;
+}));
+
+function errorText(body){
+  if (typeof body.detail === "string") return body.detail;
+  if (Array.isArray(body.detail)) return body.detail.map(d => (d.loc||[]).slice(1).join(".") + ": " + d.msg).join("; ");
+  return "Неизвестная ошибка";
+}
+
+$("form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const payload = {title:$("title").value, ingredients:$("ingredients").value};
+  if ($("category").value.trim()) payload.category = $("category").value;
+  $("submit").disabled = true; $("submit").textContent = "Генерация…";
+  $("desc").className = "desc empty"; $("desc").textContent = "Модель думает…"; $("chips").innerHTML = ""; $("meta").textContent = "";
+  const t0 = performance.now();
+  try {
+    const r = await fetch("/predict", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)});
+    const body = await r.json();
+    if (!r.ok) { $("desc").className = "desc error"; $("desc").textContent = `Ошибка ${r.status}: ${errorText(body)}`; return; }
+    $("desc").className = "desc"; $("desc").textContent = body.description || "—";
+    $("chips").innerHTML = body.warnings.length
+      ? body.warnings.map(w => `<span class="chip">⚠ ${WARN_TEXT[w] || w}</span>`).join("")
+      : `<span class="chip ok">✓ проверки пройдены</span>`;
+    $("meta").textContent = `${body.model_version} · модель ${Math.round(body.latency_ms)} мс · ответ ${Math.round(performance.now()-t0)} мс · ${body.input_tokens} токенов на входе`;
+  } catch (err) {
+    $("desc").className = "desc error"; $("desc").textContent = "Сервис недоступен: " + err.message;
+  } finally {
+    $("submit").disabled = false; $("submit").textContent = "Сгенерировать"; refreshMetrics();
+  }
+});
+
+async function refreshHealth(){
+  try {
+    const h = await (await fetch("/health")).json();
+    const map = {ready:["#3C9A5F","модель готова"], loading:["#D9A23F","модель загружается…"], error:["#C0392B","ошибка загрузки"]};
+    const [c, t] = map[h.model_state] || ["#aaa", h.model_state];
+    $("dot").style.background = c; $("statusText").textContent = t;
+    if (h.model_state === "ready" && !$("ver").textContent) {
+      const v = await (await fetch("/version")).json();
+      $("ver").textContent = `${v.model_version} · ${v.quantization} · SHA-256 ${String(v.weights_sha256).slice(0,12)}…`;
+    }
+    if (h.model_state === "loading") setTimeout(refreshHealth, 3000);
+  } catch { $("statusText").textContent = "нет связи"; setTimeout(refreshHealth, 5000); }
+}
+async function refreshMetrics(){
+  try {
+    const m = await (await fetch("/metrics")).json();
+    $("mReq").textContent = m.predict_requests;
+    $("mErr").textContent = `${m["error_rate_%"]}% / ${m["server_error_rate_%"]}%`;
+    $("mP50").textContent = m.latency_ms.p50 == null ? "—" : `${(m.latency_ms.p50/1000).toFixed(2)} / ${(m.latency_ms.p95/1000).toFixed(2)} с`;
+    $("mWarn").textContent = m.descriptions_total ? (m["warning_rate_%"].health_claim || 0) + "%" : "—";
+    $("monUpdated").textContent = "аптайм " + Math.round(m.uptime_s/60) + " мин";
+  } catch {}
+}
+refreshHealth(); refreshMetrics(); setInterval(refreshMetrics, 15000);
+</script>
+</body>
+</html>

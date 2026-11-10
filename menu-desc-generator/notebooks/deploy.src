@@ -1,0 +1,148 @@
+#%% md
+# Деплой на Hugging Face Spaces
+
+Ноутбук делает всё за один запуск:
+1. Загружает зафиксированную версию модели `rut5-menu-desc@1.0.0` (из Задания 1) в репозиторий модели на Hugging Face и ставит тег `v1.0.0`.
+2. Создаёт Space (Docker) с сервисом: FastAPI + веб-интерфейс + мониторинг.
+3. Ждёт сборки и проверяет живой сервис: `/health`, `/predict`, ошибки ввода, `/metrics`.
+
+**Перед запуском:**
+- на Drive есть папка `task1_models/rut5-menu-desc/1.0.0` (результат Задания 1);
+- `menu_desc_service.zip` загружен в корень сессии (`/content`);
+- создан токен Hugging Face с правом **Write**: huggingface.co → Settings → Access Tokens → Create new token → тип *Write*.
+
+GPU не нужен: выберите среду **CPU**.
+#%%
+import json, time, zipfile
+from pathlib import Path
+from google.colab import drive
+
+drive.mount("/content/drive")
+MODEL_SRC = Path("/content/drive/MyDrive/task1_models/rut5-menu-desc/1.0.0")
+assert (MODEL_SRC / "model_version.json").exists(), f"Нет {MODEL_SRC}: сначала выполните Задание 1"
+
+if not Path("menu_desc_service").exists():
+    zipfile.ZipFile("menu_desc_service.zip").extractall(".")
+SERVICE = Path("menu_desc_service")
+info = json.loads((MODEL_SRC / "model_version.json").read_text())
+print(info["name"], info["version"], "| SHA-256", info["files_sha256"]["model.safetensors"][:12], "…")
+print(sorted(p.name for p in MODEL_SRC.iterdir()))
+#%% md
+## 1. Вход в Hugging Face
+Вставьте токен с правом **Write** в появившееся поле. Токен не сохраняется в ноутбуке.
+#%%
+from huggingface_hub import login, whoami, HfApi
+login()
+USER = whoami()["name"]
+api = HfApi()
+MODEL_REPO = f"{USER}/rut5-menu-desc"
+SPACE_REPO = f"{USER}/menu-desc-generator"
+TAG = f"v{info['version']}"
+print("Пользователь:", USER, "| модель:", MODEL_REPO, "| Space:", SPACE_REPO, "| тег:", TAG)
+#%% md
+## 2. Репозиторий модели + тег версии
+Веса загружаются вместе с `model_version.json` (хэши, параметры генерации, метрики). Тег `v1.0.0` фиксирует версию: сервис скачивает именно её, даже если позже в репозиторий загрузят новую.
+#%%
+api.create_repo(MODEL_REPO, repo_type="model", exist_ok=True)
+
+card = f"""---
+language: ru
+base_model: ai-forever/ruT5-base
+pipeline_tag: text2text-generation
+tags: [data-to-text, menu, russian]
+---
+""" + (SERVICE / "MODEL_CARD.md").read_text(encoding="utf-8")
+api.upload_folder(folder_path=str(MODEL_SRC), repo_id=MODEL_REPO, repo_type="model",
+                  commit_message=f"{info['name']}@{info['version']}")
+api.upload_file(path_or_fileobj=card.encode("utf-8"), path_in_repo="README.md", repo_id=MODEL_REPO,
+                commit_message="Model card")
+existing = [t.name for t in api.list_repo_refs(MODEL_REPO).tags]
+if TAG not in existing:
+    api.create_tag(MODEL_REPO, tag=TAG, tag_message=f"{info['name']}@{info['version']}")
+print("Модель:", f"https://huggingface.co/{MODEL_REPO}", "| теги:", [t.name for t in api.list_repo_refs(MODEL_REPO).tags])
+#%% md
+## 3. Space с сервисом
+В Space загружается только код сервиса (Dockerfile, `app/`, `menu_desc/`). Где взять модель, сервис узнаёт из переменных `MODEL_REPO` и `MODEL_REVISION`.
+#%%
+api.create_repo(SPACE_REPO, repo_type="space", space_sdk="docker", exist_ok=True)
+api.add_space_variable(SPACE_REPO, "MODEL_REPO", MODEL_REPO)
+api.add_space_variable(SPACE_REPO, "MODEL_REVISION", TAG)
+
+api.upload_folder(folder_path=str(SERVICE), repo_id=SPACE_REPO, repo_type="space",
+                  allow_patterns=["app/**", "menu_desc/**", "Dockerfile", "requirements-app.txt", ".dockerignore"],
+                  ignore_patterns=["**/__pycache__/**"], commit_message="Deploy service")
+api.upload_file(path_or_fileobj=str(SERVICE / "deploy" / "space_README.md"), path_in_repo="README.md",
+                repo_id=SPACE_REPO, repo_type="space", commit_message="Space README")
+print("Space:", f"https://huggingface.co/spaces/{SPACE_REPO}")
+#%% md
+## 4. Ожидание сборки
+Сборка Docker-образа занимает 3–6 минут, затем сервис скачивает модель (≈ 850 МБ) и квантует её — ещё 1–3 минуты. Ход сборки виден на странице Space во вкладке **Logs**.
+#%%
+import requests
+
+host = getattr(api.space_info(SPACE_REPO), "host", None) or \
+       "https://" + SPACE_REPO.replace("/", "-").replace("_", "-").replace(".", "-").lower() + ".hf.space"
+APP_URL = host if host.startswith("http") else "https://" + host
+print("Адрес сервиса:", APP_URL)
+
+t0 = time.time()
+stage = None
+while time.time() - t0 < 20 * 60:
+    stage = api.get_space_runtime(SPACE_REPO).stage
+    if stage in ("BUILD_ERROR", "RUNTIME_ERROR", "CONFIG_ERROR"):
+        raise RuntimeError(f"Space: {stage} — откройте вкладку Logs на странице Space")
+    if stage == "RUNNING":
+        try:
+            h = requests.get(f"{APP_URL}/health", timeout=10).json()
+            if h.get("model_state") == "ready":
+                break
+            if h.get("model_state") == "error":
+                raise RuntimeError(f"Модель не загрузилась: {h.get('error')}")
+            stage = f"RUNNING, модель: {h.get('model_state')}"
+        except requests.RequestException:
+            pass
+    print(f"{int(time.time() - t0):>4} с  {stage}")
+    time.sleep(20)
+print("Готово за", int(time.time() - t0), "с:", requests.get(f"{APP_URL}/health").json())
+#%% md
+## 5. Проверка живого сервиса
+#%%
+import pandas as pd
+
+print(json.dumps(requests.get(f"{APP_URL}/version").json(), ensure_ascii=False, indent=2)[:800])
+
+dishes = [
+    {"title": "Бешбармак", "category": "Горячие блюда > Блюда из мяса",
+     "ingredients": "конина, баранина, тесто, лук репчатый, бульон"},
+    {"title": "Боул с лососем", "category": "Горячие блюда > Блюда из рыбы и морепродуктов",
+     "ingredients": "лосось, рис, авокадо, огурец, кунжут, соевый соус"},
+    {"title": "Плов узбекский", "category": "Горячие блюда > Блюда из риса",
+     "ingredients": "рис девзира, баранина, морковь, лук, чеснок, зира"},
+    {"title": "Сырники", "category": "Завтраки", "ingredients": "творог, яйцо, мука, сахар, сметана"},
+    {"title": "Баурсаки", "ingredients": "мука, молоко, дрожжи, сахар, масло растительное"},
+]
+rows = []
+for d in dishes:
+    t = time.perf_counter()
+    r = requests.post(f"{APP_URL}/predict", json=d, timeout=60)
+    rows.append({"title": d["title"], "status": r.status_code, **r.json(),
+                 "http_ms": round((time.perf_counter() - t) * 1000)})
+pd.set_option("display.max_colwidth", 120)
+demo = pd.DataFrame(rows)
+demo
+#%%
+bad = requests.post(f"{APP_URL}/predict", json={"title": "Суп", "ingredients": []})
+print("Некорректный ввод:", bad.status_code, bad.json())
+metrics = requests.get(f"{APP_URL}/metrics").json()
+print(json.dumps(metrics, ensure_ascii=False, indent=2))
+#%% md
+## Итог
+#%%
+report = {"app_url": APP_URL, "space": f"https://huggingface.co/spaces/{SPACE_REPO}",
+          "model_repo": f"https://huggingface.co/{MODEL_REPO}", "model_tag": TAG,
+          "model_version": requests.get(f"{APP_URL}/version").json()["model_version"],
+          "demo": demo[["title", "description", "warnings", "latency_ms", "http_ms"]].to_dict("records"),
+          "invalid_input_status": bad.status_code, "metrics": metrics}
+Path("deploy_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
+!cp deploy_report.json /content/drive/MyDrive/task1_models/
+print(json.dumps({k: report[k] for k in ["app_url", "space", "model_repo", "model_tag", "model_version"]}, indent=2))

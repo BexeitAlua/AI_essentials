@@ -1,0 +1,9 @@
+# Зависимости сервиса (torch ставится отдельно, CPU-сборка — см. Dockerfile)
+transformers>=4.46,<6
+sentencepiece>=0.2
+safetensors>=0.4
+protobuf>=4
+pydantic>=2.5
+fastapi>=0.110
+uvicorn[standard]>=0.29
+huggingface_hub>=0.25

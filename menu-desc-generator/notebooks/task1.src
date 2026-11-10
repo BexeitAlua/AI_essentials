@@ -1,0 +1,172 @@
+#%% md
+# Задание 1. Подготовка финальной модели к inference
+
+**Финальная модель:** `rut5-menu-desc@1.0.0` — ruT5-base, дообученная в ноутбуке Midterm, + подобранные параметры декодирования (строка `ruT5-base + tuned decoding`: лучшие chrF++ β=1 = 20.12 и BERTScore = 53.06 на test).
+
+**Что делает ноутбук:**
+1. Загружает сохранённую модель `results/rut5_menu_desc`.
+2. Фиксирует версию: копирует веса в `models/rut5-menu-desc/1.0.0`, записывает параметры генерации и SHA-256 файлов в `model_version.json`.
+3. Загружает модель через модуль inference `menu_desc` (проверка хэша, режим `eval`, `inference_mode`).
+4. Проверяет обработку новых и некорректных входных данных.
+5. Сверяет предсказания с test-предсказаниями ноутбука Midterm (воспроизводимость).
+6. Измеряет задержку и размер модели.
+
+**Как запустить в Colab:** откройте в той же сессии, где выполнялся Midterm (есть папка `results/`), или загрузите папку `results/` с Google Drive. Загрузите `menu_desc_service.zip` в корень сессии.
+#%%
+%pip install -q sentencepiece sacrebleu
+#%%
+import json, os, sys, time, zipfile
+from pathlib import Path
+
+if Path("menu_desc_service.zip").exists() and not Path("menu_desc_service").exists():
+    zipfile.ZipFile("menu_desc_service.zip").extractall(".")
+SERVICE = Path("menu_desc_service").resolve()
+sys.path.insert(0, str(SERVICE))
+
+RESULTS = Path("results")                 # папка OUT_DIR из ноутбука Midterm
+SRC_MODEL = RESULTS / "rut5_menu_desc"     # trainer.save_model(OUT_DIR / "rut5_menu_desc")
+MODEL_DIR = Path("models/rut5-menu-desc/1.0.0")
+assert SRC_MODEL.exists(), f"Нет {SRC_MODEL}: запустите Midterm до конца или скопируйте results/ с Google Drive"
+print(sorted(p.name for p in SRC_MODEL.iterdir()))
+#%% md
+## 1–2. Загрузка сохранённой модели и фиксация версии
+Скрипт копирует только файлы, нужные для inference, дописывает финальные параметры генерации в `generation_config.json` и сохраняет `model_version.json` с хэшами, метриками на test и версиями библиотек. Существующую версию скрипт не перезаписывает.
+#%%
+if not (MODEL_DIR / "model_version.json").exists():
+    !python {SERVICE}/scripts/prepare_final_model.py --src {SRC_MODEL} --dst {MODEL_DIR} --version 1.0.0 --results {RESULTS}/final_results.csv --env {RESULTS}/environment.json --experiments {RESULTS}/experiments.json
+info = json.loads((MODEL_DIR / "model_version.json").read_text(encoding="utf-8"))
+print(json.dumps({k: info[k] for k in ["name", "version", "selected_experiment", "generation", "test_metrics", "files_sha256"]},
+                 ensure_ascii=False, indent=2))
+#%% md
+## 3. Модель для inference
+`MenuDescriptionGenerator.from_dir` сверяет SHA-256 весов с `model_version.json`, загружает токенизатор и модель, переводит её в режим `eval()`. Генерация идёт в `torch.inference_mode()` с зафиксированными параметрами.
+#%%
+from menu_desc import MenuDescriptionGenerator, InputValidationError, ModelIntegrityError
+
+gen = MenuDescriptionGenerator.from_dir(MODEL_DIR)
+print(json.dumps(gen.describe(), ensure_ascii=False, indent=2))
+print(f"Параметров: {sum(p.numel() for p in gen.model.parameters()) / 1e6:.0f}M | режим обучения: {gen.model.training}")
+#%% md
+## 4. Новые входные данные
+Блюда, которых нет в датасете. Вход принимается и списком, и строкой.
+#%%
+import pandas as pd
+
+new_dishes = [
+    {"title": "Бешбармак", "category": ["Горячие блюда", "Блюда из мяса"],
+     "ingredients": ["конина", "баранина", "тесто", "лук репчатый", "бульон"]},
+    {"title": "Боул с лососем", "category": "Горячие блюда > Блюда из рыбы и морепродуктов",
+     "ingredients": "лосось, рис, авокадо, огурец, кунжут, соевый соус"},
+    {"title": "Плов узбекский", "category": "Горячие блюда > Блюда из риса",
+     "ingredients": ["рис девзира", "баранина", "морковь", "лук", "чеснок", "зира"]},
+    {"title": "Сырники", "category": "Завтраки", "ingredients": ["творог", "яйцо", "мука", "сахар", "сметана"]},
+    {"title": "Баурсаки", "ingredients": "мука; молоко; дрожжи; сахар; масло растительное"},   # без категории
+]
+outs = gen.predict_batch(new_dishes)
+pd.set_option("display.max_colwidth", 120)
+pd.DataFrame([{"title": d["title"], **o.model_dump()} for d, o in zip(new_dishes, outs)])
+#%% md
+Как вход превращается в строку модели (должна совпадать с форматом обучения `make_source`):
+#%%
+source, ingredients = gen.prepare(new_dishes[4])
+print(source)
+#%% md
+### Некорректные и «грязные» входы
+#%%
+edge_cases = {
+    "дубликаты и пробелы": {"title": "  Борщ\tукраинский ", "category": "Супы > Борщи > Красный борщ",
+                            "ingredients": "свёкла, Свёкла,  капуста ,, картофель"},
+    "пустые ингредиенты": {"title": "Суп", "ingredients": []},
+    "название без букв": {"title": "12345", "ingredients": ["рис"]},
+    "нет названия": {"ingredients": ["рис"]},
+    "31 ингредиент": {"title": "Ассорти", "ingredients": [f"ингредиент {i}" for i in range(31)]},
+}
+rows = []
+for name, dish in edge_cases.items():
+    try:
+        out = gen.predict(dish)
+        rows.append({"case": name, "status": "ok", "result": out.description, "warnings": out.warnings,
+                     "model_input": gen.prepare(dish)[0].replace("\n", " | ")})
+    except InputValidationError as e:
+        rows.append({"case": name, "status": "422 InputValidationError", "result": str(e)})
+    except Exception as e:                                  # ошибки схемы pydantic
+        rows.append({"case": name, "status": f"422 {type(e).__name__}", "result": str(e).splitlines()[0]})
+pd.DataFrame(rows)
+#%% md
+## 5. Воспроизводимость: сверка с test-предсказаниями Midterm
+Генерируем по тем же строкам `source` из `test_predictions.csv` и сравниваем с колонкой `ruT5 + tuned decoding`. Совпадение подтверждает, что загружены именно те веса и те параметры генерации, по которым считались метрики.
+#%%
+test_pred = pd.read_csv(RESULTS / "test_predictions.csv")
+col = "ruT5 + tuned decoding"
+sample = test_pred.head(50)
+regen = []
+for i in range(0, len(sample), 32):                        # те же батчи по 32, что gen_t5 в Midterm
+    regen += gen.generate_raw(sample["source"].iloc[i:i + 32].tolist())[0]
+match = (pd.Series(regen) == sample[col].fillna("").astype(str).str.strip()).mean()
+print(f"Точное совпадение с Midterm: {match:.0%} ({len(sample)} примеров)")
+pd.DataFrame({"title": sample["title"], "midterm": sample[col], "final_model": regen}).head(5)
+#%% md
+## 6. Задержка и размер модели
+#%%
+import statistics, torch
+
+def latency(generator, dish, n=10):
+    generator.predict(dish)                               # прогрев
+    times = []
+    for _ in range(n):
+        t0 = time.perf_counter(); generator.predict(dish); times.append((time.perf_counter() - t0) * 1000)
+    return round(statistics.median(times)), round(sorted(times)[int(0.9 * n) - 1])
+
+size_mb = (MODEL_DIR / "model.safetensors").stat().st_size / 2**20
+perf = {"weights_mb": round(size_mb), "device": gen.device}
+perf["p50_ms"], perf["p90_ms"] = latency(gen, new_dishes[0])
+if gen.device == "cuda":                                    # сервер на Render/Railway будет без GPU
+    cpu_gen = MenuDescriptionGenerator.from_dir(MODEL_DIR, device="cpu")
+    perf["cpu_p50_ms"], perf["cpu_p90_ms"] = latency(cpu_gen, new_dishes[0], n=5)
+    del cpu_gen
+perf
+#%% md
+### INT8 для CPU-сервера
+Динамическое INT8-квантование Linear-слоёв уменьшает веса ≈ в 3 раза и ускоряет CPU-inference. Проверяем, сколько качества оно стоит, на тех же 50 test-примерах.
+#%%
+import sacrebleu
+int8_gen = MenuDescriptionGenerator.from_dir(MODEL_DIR, device="cpu", quantize_int8=True)
+int8_out = []
+for i in range(0, len(sample), 32):
+    int8_out += int8_gen.generate_raw(sample["source"].iloc[i:i + 32].tolist())[0]
+refs = [sample["target"].astype(str).tolist()]
+chrf1 = lambda preds: round(sacrebleu.CHRF(word_order=2, beta=1).corpus_score(preds, refs).score, 2)
+perf["int8"] = {"chrF++_b1_fp32": chrf1(regen), "chrF++_b1_int8": chrf1(int8_out),
+                "same_as_fp32_%": round(100 * float((pd.Series(int8_out) == pd.Series(regen)).mean()), 1)}
+perf["int8"]["cpu_p50_ms"], perf["int8"]["cpu_p90_ms"] = latency(int8_gen, new_dishes[0], n=5)
+del int8_gen
+perf["int8"]
+#%% md
+## 7. Защита версии: изменённые веса не загрузятся
+#%%
+import shutil, tempfile
+tmp = Path(tempfile.mkdtemp()) / "tampered"
+shutil.copytree(MODEL_DIR, tmp)
+with open(tmp / "model.safetensors", "ab") as f:
+    f.write(b"\0")
+try:
+    MenuDescriptionGenerator.from_dir(tmp)
+except ModelIntegrityError as e:
+    print("Отклонено:", e)
+shutil.rmtree(tmp.parent)
+#%% md
+## Итог
+#%%
+report = {"model_version": gen.version, "weights_sha256": info["files_sha256"]["model.safetensors"],
+          "generation": info["generation"], "test_metrics": info["test_metrics"],
+          "reproducibility_match": float(match), "performance": perf,
+          "new_dishes_ok": len(outs) == len(new_dishes)}
+(MODEL_DIR.parent / "inference_check.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
+print(json.dumps(report, ensure_ascii=False, indent=2))
+print(f"""
+Модель {gen.version} готова к inference:
+- выбрана по результатам экспериментов: chrF++ β=1 = {info['test_metrics'].get('chrF++_b1')}, BERTScore = {info['test_metrics'].get('BERTScore_F1')};
+- версия зафиксирована: веса SHA-256 {info['files_sha256']['model.safetensors'][:12]}…, параметры генерации в model_version.json;
+- новые входы валидируются и приводятся к формату обучения, ошибки возвращаются понятным сообщением;
+- предсказания совпадают с Midterm на {match:.0%} примеров;
+- задержка {perf['p50_ms']} мс на {perf['device']}.""")
