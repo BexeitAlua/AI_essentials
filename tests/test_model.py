@@ -95,3 +95,12 @@ def test_prepare_reads_best_decoding(tmp_path):
     assert prep.read_best_decoding(p) == {"num_beams": 4, "length_penalty": 2.0,
                                           "no_repeat_ngram_size": 2, "min_new_tokens": 15}
     assert prep.read_best_decoding(tmp_path / "missing.json") == {}
+
+
+def test_int8_falls_back_to_fp32_without_engine(tiny_model_dir, monkeypatch):
+    """macOS-сборки PyTorch бывают без движка квантования: сервис должен работать в FP32, а не падать."""
+    import menu_desc.model as m
+    monkeypatch.setattr(m, "_select_quantized_engine", lambda: None)
+    gen = MenuDescriptionGenerator.from_dir(tiny_model_dir, device="cpu", quantize_int8=True)
+    assert gen.describe()["quantization"] == "none"
+    assert isinstance(gen.predict({"title": "Суп", "ingredients": ["лук"]}).description, str)

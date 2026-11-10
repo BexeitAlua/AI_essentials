@@ -1,0 +1,7 @@
+models/
+notebooks/
+tests/
+deploy/
+**/__pycache__
+.pytest_cache
+*.zip

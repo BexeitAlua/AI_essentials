@@ -169,8 +169,7 @@ def create_app(settings: Settings | None = None, load_in_background: bool = True
         if service.generator is None:
             raise HTTPException(503, detail=f"Модель не готова: {service.state}")
         g = service.generator
-        return {"api_version": API_VERSION, **g.describe(), "quantization": "dynamic-int8" if
-                settings.quantize_int8 else "none", "test_metrics": g.info.get("test_metrics", {}),
+        return {"api_version": API_VERSION, **g.describe(), "test_metrics": g.info.get("test_metrics", {}),
                 "input": g.info.get("input", {})}
 
     @app.get("/metrics", summary="Метрики мониторинга")

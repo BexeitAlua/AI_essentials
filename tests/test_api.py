@@ -121,5 +121,5 @@ def test_model_downloaded_from_hub_when_missing(tiny_model_dir, tmp_path, monkey
 
 def test_int8_service(tiny_model_dir):
     with TestClient(create_app(make_settings(tiny_model_dir, quantize_int8=True), load_in_background=False)) as c:
-        assert c.get("/version").json()["quantization"] == "dynamic-int8"
+        assert c.get("/version").json()["quantization"].startswith("dynamic-int8")
         assert c.post("/predict", json=DISH).status_code == 200

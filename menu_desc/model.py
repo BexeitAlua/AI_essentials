@@ -36,6 +36,18 @@ def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
+def _select_quantized_engine() -> str | None:
+    """Движок INT8: x86/fbgemm на серверах Linux, qnnpack на ARM (Apple silicon). None — нет ни одного."""
+    current = torch.backends.quantized.engine
+    if current and current != "none":
+        return current
+    for engine in ("x86", "fbgemm", "qnnpack", "onednn"):
+        if engine in torch.backends.quantized.supported_engines:
+            torch.backends.quantized.engine = engine
+            return engine
+    return None
+
+
 class ModelIntegrityError(RuntimeError):
     """Веса не совпадают с зафиксированной версией."""
 
@@ -74,12 +86,21 @@ class MenuDescriptionGenerator:
         tokenizer = AutoTokenizer.from_pretrained(model_dir)
         model = AutoModelForSeq2SeqLM.from_pretrained(model_dir, torch_dtype=torch.float32)
         model.eval()
+        quantization = "none"
         if quantize_int8:
             if device != "cpu":
                 raise ValueError("Динамическое INT8-квантование поддерживается только на CPU")
-            # квантуются только Linear-слои; веса хранятся в INT8, вычисления на CPU
-            model = torch.ao.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
-            info = {**info, "runtime": {**info.get("runtime", {}), "quantization": "dynamic-int8"}}
+            engine = _select_quantized_engine()
+            if engine is None:
+                logger.warning("INT8: нет движка квантования в этой сборке PyTorch — работаем в FP32")
+            else:
+                try:
+                    # квантуются только Linear-слои; веса хранятся в INT8, вычисления на CPU
+                    model = torch.ao.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
+                    quantization = f"dynamic-int8 ({engine})"
+                except RuntimeError as e:     # например, macOS-сборка без поддержки нужного оператора
+                    logger.warning("INT8 не удалось (%s) — работаем в FP32", e)
+        info = {**info, "runtime": {**info.get("runtime", {}), "quantization": quantization}}
         model.to(device)
         logger.info("Loaded %s@%s on %s", info["name"], info["version"], device)
         return cls(model, tokenizer, info, device)
@@ -132,6 +153,7 @@ class MenuDescriptionGenerator:
         return {"model_version": self.version, "device": self.device,
                 "base_model": self.info["base_model"], "generation": self.generation_kwargs,
                 "weights_sha256": self.info["files_sha256"].get("model.safetensors"),
+                "quantization": self.info.get("runtime", {}).get("quantization", "none"),
                 "created_at": self.info["created_at"]}
 
 
